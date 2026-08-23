@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -25,6 +26,7 @@ from kite_core import (
     save_run,
     upsert_account,
 )
+from vriksha_client import VrikshaClient
 
 
 load_dotenv()
@@ -55,6 +57,23 @@ class LoginInput(BaseModel):
 class ExecuteInput(BaseModel):
     plan_id: str
     market_protection: float = -1
+
+
+class VrikshaAuthInput(BaseModel):
+    base_url: str | None = None
+    cookie: str = ""
+    bearer_token: str = ""
+
+
+class VrikshaPlanInput(BaseModel):
+    label: str
+    strategy_id: str
+    source: str
+    min_order_value: float = 500
+    max_order_value: float = 0
+    base_url: str | None = None
+    cookie: str = ""
+    bearer_token: str = ""
 
 
 @app.get("/api/accounts")
@@ -182,6 +201,70 @@ async def plan(
     }
 
 
+@app.post("/api/vriksha/subscriptions")
+def vriksha_subscriptions(payload: VrikshaAuthInput) -> dict:
+    try:
+        client = vriksha_client(payload)
+        return {"subscriptions": client.subscriptions()}
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/vriksha/plan")
+def vriksha_plan(payload: VrikshaPlanInput) -> dict:
+    account = get_account(payload.label)
+    if not account.access_token:
+        raise HTTPException(400, "Account is not connected to Kite.")
+    if payload.source not in {"latest_model", "rebalance_history"}:
+        raise HTTPException(400, "Source must be latest_model or rebalance_history.")
+
+    try:
+        client = vriksha_client(payload)
+        if payload.source == "latest_model":
+            target = client.latest_model_portfolio(payload.strategy_id)
+        else:
+            target = client.rebalance_history(payload.strategy_id)
+
+        kite = kite_for(account)
+        holdings = fetch_holdings(kite)
+        cash = fetch_cash(kite)
+        prices = fetch_prices(kite, target, holdings)
+        order_plan, warnings = build_plan(
+            target,
+            holdings,
+            prices,
+            cash,
+            payload.min_order_value,
+            payload.max_order_value,
+            liquidate_absent=target.attrs.get("liquidate_absent", True),
+        )
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    plan_id = uuid4().hex
+    PENDING_PLANS[plan_id] = {
+        "account": account,
+        "target": target,
+        "holdings": holdings,
+        "plan": order_plan,
+        "warnings": warnings,
+        "cash": cash,
+        "import_kind": target.attrs.get("import_kind", "target_portfolio"),
+        "source_filename": f"vriksha:{payload.strategy_id}:{payload.source}",
+    }
+    return {
+        "plan_id": plan_id,
+        "cash": cash,
+        "import_kind": target.attrs.get("import_kind", "target_portfolio"),
+        "liquidate_absent": target.attrs.get("liquidate_absent", True),
+        "target": frame_to_records(target),
+        "holdings": frame_to_records(holdings),
+        "plan": frame_to_records(order_plan),
+        "warnings": warnings,
+        "summary": summarize_plan(order_plan),
+    }
+
+
 @app.post("/api/execute")
 def execute(payload: ExecuteInput) -> dict:
     pending = PENDING_PLANS.get(payload.plan_id)
@@ -228,6 +311,17 @@ def get_account(label: str, required: bool = True) -> Account | None:
     if required:
         raise HTTPException(404, f"Account not found: {label}")
     return None
+
+
+def vriksha_client(payload: VrikshaAuthInput | VrikshaPlanInput) -> VrikshaClient:
+    base_url = payload.base_url or os.getenv(
+        "VRIKSHA_BASE_URL", "https://www.vriksha-capital.com"
+    )
+    return VrikshaClient(
+        base_url=base_url,
+        cookie=payload.cookie.strip(),
+        bearer_token=payload.bearer_token.strip(),
+    )
 
 
 def frame_to_records(frame: pd.DataFrame) -> list[dict]:

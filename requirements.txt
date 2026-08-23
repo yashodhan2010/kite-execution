@@ -4,3 +4,4 @@ python-multipart>=0.0.9
 pandas>=2.2
 python-dotenv>=1.0
 kiteconnect>=5.0
+requests>=2.31

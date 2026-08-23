@@ -382,9 +382,7 @@ def execute_plan(
                 "validity": kite.VALIDITY_DAY,
                 "tag": tag[:20],
             }
-            if "market_protection" in inspect.signature(kite.place_order).parameters:
-                order["market_protection"] = market_protection
-            order_id = kite.place_order(**order)
+            order_id = place_order(kite, order, market_protection)
             results.loc[idx, "status"] = "PLACED"
             results.loc[idx, "order_id"] = order_id
             results.loc[idx, "message"] = ""
@@ -392,6 +390,28 @@ def execute_plan(
             results.loc[idx, "status"] = "FAILED"
             results.loc[idx, "message"] = str(exc)
     return refresh_order_status(kite, results)
+
+
+def place_order(kite: KiteConnect, order: dict, market_protection: float) -> str:
+    order_with_protection = {**order, "market_protection": market_protection}
+    if "market_protection" in inspect.signature(kite.place_order).parameters:
+        return kite.place_order(**order_with_protection)
+
+    try:
+        return kite.place_order(**order)
+    except Exception as exc:
+        if "market protection" not in str(exc).lower():
+            raise
+
+    variety = order["variety"]
+    params = {
+        key: value for key, value in order_with_protection.items() if key != "variety"
+    }
+    return kite._post(
+        "order.place",
+        url_args={"variety": variety},
+        params=params,
+    )["order_id"]
 
 
 def refresh_order_status(kite: KiteConnect, results: pd.DataFrame) -> pd.DataFrame:

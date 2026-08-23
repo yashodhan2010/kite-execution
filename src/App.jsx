@@ -21,6 +21,15 @@ function App() {
   const [requestToken, setRequestToken] = useState('');
   const [accountForm, setAccountForm] = useState({ label: '', api_key: '', api_secret: '' });
   const [file, setFile] = useState(null);
+  const [importMode, setImportMode] = useState('csv');
+  const [vrikshaAuth, setVrikshaAuth] = useState({
+    base_url: 'https://www.vriksha-capital.com',
+    cookie: '',
+    bearer_token: '',
+  });
+  const [vrikshaSource, setVrikshaSource] = useState('latest_model');
+  const [subscriptions, setSubscriptions] = useState([]);
+  const [selectedStrategy, setSelectedStrategy] = useState('');
   const [settings, setSettings] = useState({ min_order_value: 500, max_order_value: 0, market_protection: -1 });
   const [plan, setPlan] = useState(null);
   const [result, setResult] = useState(null);
@@ -33,6 +42,7 @@ function App() {
   useEffect(() => {
     refresh();
     completeRedirectLogin();
+    completeVrikshaConnect();
   }, []);
 
   const activeAccount = useMemo(
@@ -101,6 +111,21 @@ function App() {
     }
   }
 
+  function completeVrikshaConnect() {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('vriksha_token');
+    const baseUrl = params.get('vriksha_base_url');
+    if (!token) return;
+
+    setVrikshaAuth((current) => ({
+      ...current,
+      base_url: baseUrl || current.base_url,
+      bearer_token: token,
+    }));
+    setImportMode('vriksha');
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
+
   async function completeLogin() {
     setBusy('Completing login');
     await call('/api/complete-login', {
@@ -132,6 +157,48 @@ function App() {
     form.append('max_order_value', settings.max_order_value);
     form.append('file', file);
     const data = await call('/api/plan', { method: 'POST', body: form });
+    setPlan(data);
+    setBusy('');
+  }
+
+  async function loadVrikshaSubscriptions() {
+    setBusy('Loading Vriksha subscriptions');
+    const data = await call('/api/vriksha/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(vrikshaAuth),
+    });
+    setSubscriptions(data.subscriptions || []);
+    if (!selectedStrategy && data.subscriptions?.length) {
+      setSelectedStrategy(data.subscriptions[0].strategy_id);
+    }
+    setBusy('');
+  }
+
+  function connectVriksha() {
+    const redirectUri = `${window.location.origin}${window.location.pathname}`;
+    const baseUrl = vrikshaAuth.base_url.replace(/\/$/, '');
+    const url = `${baseUrl}/execution/connect?redirect_uri=${encodeURIComponent(redirectUri)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async function generateVrikshaPlan() {
+    if (!selectedStrategy || !active) return;
+    setBusy('Fetching Vriksha model and generating plan');
+    setResult(null);
+    setConfirm(false);
+    const data = await call('/api/vriksha/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label: active,
+        strategy_id: selectedStrategy,
+        source: vrikshaSource,
+        min_order_value: Number(settings.min_order_value),
+        max_order_value: Number(settings.max_order_value),
+        ...vrikshaAuth,
+      }),
+    });
     setPlan(data);
     setBusy('');
   }
@@ -254,9 +321,38 @@ function App() {
           <div className="panel action-panel">
             <div className="step-icon"><FileUp size={20} /></div>
             <h3>Import Target</h3>
-            <p>Use Vriksha latest portfolio or rebalance history CSV.</p>
-            <input className="file" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-            <button className="primary wide" disabled={!file || !activeAccount?.connected} onClick={generatePlan}>Generate Execution Plan</button>
+            <p>Import by CSV or pull directly from subscribed Vriksha strategies.</p>
+            <div className="segmented">
+              <button className={importMode === 'csv' ? 'selected' : ''} onClick={() => setImportMode('csv')}>CSV</button>
+              <button className={importMode === 'vriksha' ? 'selected' : ''} onClick={() => setImportMode('vriksha')}>Vriksha</button>
+            </div>
+            {importMode === 'csv' ? (
+              <>
+                <input className="file" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                <button className="primary wide" disabled={!file || !activeAccount?.connected} onClick={generatePlan}>Generate Execution Plan</button>
+              </>
+            ) : (
+              <div className="vriksha-form">
+                <input placeholder="Vriksha base URL" value={vrikshaAuth.base_url} onChange={(e) => setVrikshaAuth({ ...vrikshaAuth, base_url: e.target.value })} />
+                <button className="secondary" onClick={connectVriksha}>Connect Vriksha</button>
+                <textarea placeholder="Logged-in Vriksha Cookie header" value={vrikshaAuth.cookie} onChange={(e) => setVrikshaAuth({ ...vrikshaAuth, cookie: e.target.value })} />
+                <input placeholder="Bearer token, optional" value={vrikshaAuth.bearer_token} onChange={(e) => setVrikshaAuth({ ...vrikshaAuth, bearer_token: e.target.value })} />
+                <button className="secondary" onClick={loadVrikshaSubscriptions}>Load Subscriptions</button>
+                <select value={selectedStrategy} onChange={(e) => setSelectedStrategy(e.target.value)}>
+                  <option value="">Select strategy</option>
+                  {subscriptions.map((strategy) => (
+                    <option key={strategy.strategy_id} value={strategy.strategy_id}>
+                      {strategy.strategy_name || strategy.strategy_id}
+                    </option>
+                  ))}
+                </select>
+                <select value={vrikshaSource} onChange={(e) => setVrikshaSource(e.target.value)}>
+                  <option value="latest_model">Latest model portfolio</option>
+                  <option value="rebalance_history">Latest rebalance only</option>
+                </select>
+                <button className="primary wide" disabled={!selectedStrategy || !activeAccount?.connected} onClick={generateVrikshaPlan}>Generate Execution Plan</button>
+              </div>
+            )}
           </div>
         </section>
 

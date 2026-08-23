@@ -56,6 +56,45 @@ captures it and the backend generates the access token automatically.
 The app does not store Kite passwords or TOTP seeds. The `request_token` input is
 kept only as a fallback if browser redirect capture is unavailable.
 
+## Vriksha Direct Import
+
+The app can pull subscribed strategy data directly from Vriksha if the Vriksha
+site exposes:
+
+```text
+GET /api/execution/subscriptions
+GET /api/execution/strategies/{strategy_id}/latest-model-portfolio.csv
+GET /api/execution/strategies/{strategy_id}/rebalance-history.csv
+```
+
+Use the `Vriksha` import tab and provide:
+
+```text
+Base URL
+Logged-in Cookie header, or a bearer token if Vriksha supports token auth
+```
+
+The fetched CSV is normalized through the same execution planner as uploaded
+files.
+
+For the cleanest login experience, Vriksha should expose:
+
+```text
+GET /execution/connect?redirect_uri=http://127.0.0.1:5173
+```
+
+Behavior:
+
+```text
+If not logged in, complete Vriksha login first.
+Generate a short-lived execution API token for the logged-in user.
+Redirect to:
+http://127.0.0.1:5173?vriksha_token={token}&vriksha_base_url=https://www.vriksha-capital.com
+```
+
+The local app captures `vriksha_token` and uses it as a bearer token for the
+execution export endpoints.
+
 ## Accepted Portfolio Columns
 
 The importer looks for a symbol column:
