@@ -32,6 +32,7 @@ function App() {
   const [selectedStrategy, setSelectedStrategy] = useState('');
   const [settings, setSettings] = useState({ min_order_value: 500, max_order_value: 0, market_protection: -1 });
   const [plan, setPlan] = useState(null);
+  const [selectedOrders, setSelectedOrders] = useState([]);
   const [result, setResult] = useState(null);
   const [diagnostics, setDiagnostics] = useState(null);
   const [runs, setRuns] = useState([]);
@@ -52,15 +53,19 @@ function App() {
 
   async function refresh() {
     setError('');
-    const [accountRes, runRes] = await Promise.all([
-      fetch(`${API}/api/accounts`),
-      fetch(`${API}/api/runs`),
-    ]);
-    const accountData = await accountRes.json();
-    const runData = await runRes.json();
-    setAccounts(accountData);
-    setRuns(runData.runs || []);
-    if (!active && accountData.length) setActive(accountData[0].label);
+    try {
+      const [accountRes, runRes] = await Promise.all([
+        fetch(`${API}/api/accounts`),
+        fetch(`${API}/api/runs`),
+      ]);
+      const accountData = await accountRes.json();
+      const runData = await runRes.json();
+      setAccounts(accountData);
+      setRuns(runData.runs || []);
+      if (!active && accountData.length) setActive(accountData[0].label);
+    } catch {
+      setError('Backend is not reachable at http://127.0.0.1:8001. Start FastAPI, then refresh.');
+    }
   }
 
   async function saveAccount(event) {
@@ -158,6 +163,7 @@ function App() {
     form.append('file', file);
     const data = await call('/api/plan', { method: 'POST', body: form });
     setPlan(data);
+    setSelectedOrders(data.plan.map((_, index) => index));
     setBusy('');
   }
 
@@ -200,11 +206,12 @@ function App() {
       }),
     });
     setPlan(data);
+    setSelectedOrders(data.plan.map((_, index) => index));
     setBusy('');
   }
 
   async function execute() {
-    if (!plan || !confirm) return;
+    if (!plan || !confirm || !selectedOrders.length) return;
     setBusy('Executing orders');
     const data = await call('/api/execute', {
       method: 'POST',
@@ -212,11 +219,28 @@ function App() {
       body: JSON.stringify({
         plan_id: plan.plan_id,
         market_protection: Number(settings.market_protection),
+        selected_order_indices: selectedOrders,
       }),
     });
     setResult(data);
     await refresh();
     setBusy('');
+  }
+
+  function toggleOrder(index) {
+    setSelectedOrders((current) =>
+      current.includes(index)
+        ? current.filter((item) => item !== index)
+        : [...current, index].sort((a, b) => a - b)
+    );
+  }
+
+  function selectAllOrders() {
+    setSelectedOrders(plan?.plan.map((_, index) => index) || []);
+  }
+
+  function clearSelectedOrders() {
+    setSelectedOrders([]);
   }
 
   async function call(path, options = {}) {
@@ -232,6 +256,8 @@ function App() {
   }
 
   const summary = plan?.summary || {};
+  const selectedPlanRows = plan?.plan.filter((_, index) => selectedOrders.includes(index)) || [];
+  const selectedSummary = summarizeRows(selectedPlanRows);
 
   return (
     <main className="shell">
@@ -373,13 +399,30 @@ function App() {
               <div className="badge">{plan.import_kind.replace('_', ' ')}</div>
             </div>
             {plan.warnings?.map((warning) => <div className="alert warn" key={warning}>{warning}</div>)}
-            <DataTable rows={plan.plan} />
+            <div className="selection-toolbar">
+              <div>
+                <strong>{selectedOrders.length} of {plan.plan.length} orders selected</strong>
+                <span>
+                  Buy {money(selectedSummary.buy_value)} · Sell {money(selectedSummary.sell_value)}
+                </span>
+              </div>
+              <div className="button-row">
+                <button className="secondary" onClick={selectAllOrders}>Select all</button>
+                <button className="secondary" onClick={clearSelectedOrders}>Clear</button>
+              </div>
+            </div>
+            <DataTable
+              rows={plan.plan}
+              selectable
+              selectedRows={selectedOrders}
+              onToggleRow={toggleOrder}
+            />
             <div className="execute-bar">
               <label className="check">
                 <input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} />
-                <span>I reviewed this plan and want to place market orders with market protection.</span>
+                <span>I reviewed the selected orders and want to place market orders with market protection.</span>
               </label>
-              <button className="danger-button" disabled={!confirm || !plan.plan.length} onClick={execute}>Execute Orders</button>
+              <button className="danger-button" disabled={!confirm || !selectedOrders.length} onClick={execute}>Execute Selected Orders</button>
             </div>
           </section>
         )}
@@ -421,18 +464,32 @@ function Metric({ icon, label, value }) {
   );
 }
 
-function DataTable({ rows, empty = 'No rows.' }) {
+function DataTable({ rows, empty = 'No rows.', selectable = false, selectedRows = [], onToggleRow = null }) {
   if (!rows?.length) return <div className="empty">{empty}</div>;
   const columns = Object.keys(rows[0]);
   return (
     <div className="table-wrap">
       <table>
         <thead>
-          <tr>{columns.map((column) => <th key={column}>{column.replaceAll('_', ' ')}</th>)}</tr>
+          <tr>
+            {selectable && <th>Execute</th>}
+            {columns.map((column) => <th key={column}>{column.replaceAll('_', ' ')}</th>)}
+          </tr>
         </thead>
         <tbody>
           {rows.map((row, index) => (
-            <tr key={index}>
+            <tr className={selectable && !selectedRows.includes(index) ? 'row-muted' : ''} key={index}>
+              {selectable && (
+                <td>
+                  <input
+                    className="row-check"
+                    type="checkbox"
+                    checked={selectedRows.includes(index)}
+                    onChange={() => onToggleRow?.(index)}
+                    aria-label={`Execute ${row.tradingsymbol || row.symbol || `row ${index + 1}`}`}
+                  />
+                </td>
+              )}
               {columns.map((column) => <td key={column}>{formatCell(row[column])}</td>)}
             </tr>
           ))}
@@ -450,6 +507,18 @@ function formatCell(value) {
 
 function money(value) {
   return Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+}
+
+function summarizeRows(rows) {
+  return rows.reduce(
+    (total, row) => {
+      const value = Number(row.value || 0);
+      if (row.action === 'BUY') total.buy_value += value;
+      if (row.action === 'SELL') total.sell_value += value;
+      return total;
+    },
+    { buy_value: 0, sell_value: 0 },
+  );
 }
 
 createRoot(document.getElementById('root')).render(<App />);

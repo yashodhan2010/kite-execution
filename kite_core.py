@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import inspect
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,9 +13,11 @@ import pandas as pd
 from kiteconnect import KiteConnect
 
 
-DATA_DIR = Path("data")
+APP_DIR = Path(__file__).resolve().parent
+DATA_DIR = APP_DIR / "data"
 ACCOUNTS_FILE = DATA_DIR / "accounts.json"
 RUNS_DIR = DATA_DIR / "runs"
+ORDER_REQUEST_DELAY_SECONDS = 0.4
 
 
 @dataclass
@@ -389,6 +392,7 @@ def execute_plan(
         except Exception as exc:
             results.loc[idx, "status"] = "FAILED"
             results.loc[idx, "message"] = str(exc)
+        time.sleep(ORDER_REQUEST_DELAY_SECONDS)
     return refresh_order_status(kite, results)
 
 
@@ -482,6 +486,7 @@ def list_runs() -> pd.DataFrame:
         result_path = path / "execution_result.csv"
         plan = pd.read_csv(plan_path) if plan_path.exists() else pd.DataFrame()
         result = pd.read_csv(result_path) if result_path.exists() else pd.DataFrame()
+        statuses = result["status"].astype(str) if "status" in result.columns else pd.Series(dtype=str)
         rows.append(
             {
                 "run": path.name,
@@ -492,10 +497,10 @@ def list_runs() -> pd.DataFrame:
                 "sell_value": plan.loc[plan.get("action") == "SELL", "value"].sum()
                 if not plan.empty
                 else 0,
-                "placed": int((result.get("status") == "PLACED").sum())
+                "placed": int(statuses.isin(["PLACED", "COMPLETE"]).sum())
                 if not result.empty
                 else 0,
-                "failed": int((result.get("status") == "FAILED").sum())
+                "failed": int((statuses == "FAILED").sum())
                 if not result.empty
                 else 0,
             }

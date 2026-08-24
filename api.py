@@ -57,6 +57,7 @@ class LoginInput(BaseModel):
 class ExecuteInput(BaseModel):
     plan_id: str
     market_protection: float = -1
+    selected_order_indices: list[int] | None = None
 
 
 class VrikshaAuthInput(BaseModel):
@@ -274,10 +275,21 @@ def execute(payload: ExecuteInput) -> dict:
         raise HTTPException(400, "Market protection must be -1 or above 0 up to 100.")
 
     account: Account = pending["account"]
+    full_plan = pending["plan"]
+    if payload.selected_order_indices is None:
+        selected_plan = full_plan
+    else:
+        selected_indices = sorted(set(payload.selected_order_indices))
+        if not selected_indices:
+            raise HTTPException(400, "Select at least one order to execute.")
+        if selected_indices[0] < 0 or selected_indices[-1] >= len(full_plan):
+            raise HTTPException(400, "Selected order index is outside the current plan.")
+        selected_plan = full_plan.iloc[selected_indices].copy()
+
     try:
         result = execute_plan(
             kite_for(account),
-            pending["plan"],
+            selected_plan,
             tag="vriksha_rebalance",
             market_protection=payload.market_protection,
         )
@@ -285,7 +297,7 @@ def execute(payload: ExecuteInput) -> dict:
             account,
             pending["target"],
             pending["holdings"],
-            pending["plan"],
+            selected_plan,
             pending["warnings"],
             result,
         )
