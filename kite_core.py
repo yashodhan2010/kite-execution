@@ -27,6 +27,10 @@ class Account:
     api_secret: str
     access_token: str = ""
     user_id: str = ""
+    login_user_id: str = ""
+    password: str = ""
+    totp_secret: str = ""
+    has_paid_api: bool = False
 
 
 @dataclass

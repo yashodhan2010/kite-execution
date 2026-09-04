@@ -26,6 +26,7 @@ from kite_core import (
     save_run,
     upsert_account,
 )
+from kite_auto_login import auto_login, is_auto_login_configured
 from vriksha_client import VrikshaClient
 
 
@@ -47,6 +48,10 @@ class AccountInput(BaseModel):
     label: str
     api_key: str
     api_secret: str
+    login_user_id: str = ""
+    password: str = ""
+    totp_secret: str = ""
+    has_paid_api: bool = False
 
 
 class LoginInput(BaseModel):
@@ -84,6 +89,7 @@ def accounts() -> list[dict]:
             "label": account.label,
             "user_id": account.user_id,
             "connected": bool(account.access_token),
+            "has_paid_api": account.has_paid_api,
         }
         for account in load_accounts()
     ]
@@ -101,6 +107,16 @@ def save_account(payload: AccountInput) -> dict:
             api_secret=payload.api_secret,
             access_token=existing.access_token if existing else "",
             user_id=existing.user_id if existing else "",
+            login_user_id=payload.login_user_id.strip()
+            if payload.login_user_id
+            else (existing.login_user_id if existing else ""),
+            password=payload.password
+            if payload.password
+            else (existing.password if existing else ""),
+            totp_secret=payload.totp_secret.strip()
+            if payload.totp_secret
+            else (existing.totp_secret if existing else ""),
+            has_paid_api=payload.has_paid_api,
         )
     )
     return {"ok": True}
@@ -109,7 +125,21 @@ def save_account(payload: AccountInput) -> dict:
 @app.get("/api/login-url/{label}")
 def login_url(label: str) -> dict:
     account = get_account(label)
-    return {"login_url": kite_for(account).login_url()}
+    return {
+        "login_url": kite_for(account).login_url(),
+        "auto_login_configured": is_auto_login_configured(account),
+    }
+
+
+@app.post("/api/auto-login/{label}")
+def auto_login_account(label: str) -> dict:
+    account = get_account(label)
+    try:
+        request_token = auto_login(account)
+        account = finish_login(account, request_token)
+    except Exception as exc:
+        raise HTTPException(400, f"Auto-login failed: {exc}") from exc
+    return {"label": account.label, "user_id": account.user_id, "connected": True}
 
 
 @app.get("/api/diagnostics/{label}")
@@ -163,9 +193,11 @@ async def plan(
     try:
         target = normalize_target_portfolio(BytesIO(content))
         kite = kite_for(account)
+        market_data_account = get_market_data_account(account)
+        market_data_kite = kite_for(market_data_account)
         holdings = fetch_holdings(kite)
         cash = fetch_cash(kite)
-        prices = fetch_prices(kite, target, holdings)
+        prices = fetch_prices(market_data_kite, target, holdings)
         order_plan, warnings = build_plan(
             target,
             holdings,
@@ -175,6 +207,8 @@ async def plan(
             max_order_value,
             liquidate_absent=target.attrs.get("liquidate_absent", True),
         )
+        if market_data_account.label != account.label:
+            warnings.append(f"Prices fetched via {market_data_account.label}.")
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -186,12 +220,14 @@ async def plan(
         "plan": order_plan,
         "warnings": warnings,
         "cash": cash,
+        "market_data_account": market_data_account.label,
         "import_kind": target.attrs.get("import_kind", "target_portfolio"),
         "source_filename": file.filename,
     }
     return {
         "plan_id": plan_id,
         "cash": cash,
+        "market_data_account": market_data_account.label,
         "import_kind": target.attrs.get("import_kind", "target_portfolio"),
         "liquidate_absent": target.attrs.get("liquidate_absent", True),
         "target": frame_to_records(target),
@@ -227,9 +263,11 @@ def vriksha_plan(payload: VrikshaPlanInput) -> dict:
             target = client.rebalance_history(payload.strategy_id)
 
         kite = kite_for(account)
+        market_data_account = get_market_data_account(account)
+        market_data_kite = kite_for(market_data_account)
         holdings = fetch_holdings(kite)
         cash = fetch_cash(kite)
-        prices = fetch_prices(kite, target, holdings)
+        prices = fetch_prices(market_data_kite, target, holdings)
         order_plan, warnings = build_plan(
             target,
             holdings,
@@ -239,6 +277,8 @@ def vriksha_plan(payload: VrikshaPlanInput) -> dict:
             payload.max_order_value,
             liquidate_absent=target.attrs.get("liquidate_absent", True),
         )
+        if market_data_account.label != account.label:
+            warnings.append(f"Prices fetched via {market_data_account.label}.")
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -250,12 +290,14 @@ def vriksha_plan(payload: VrikshaPlanInput) -> dict:
         "plan": order_plan,
         "warnings": warnings,
         "cash": cash,
+        "market_data_account": market_data_account.label,
         "import_kind": target.attrs.get("import_kind", "target_portfolio"),
         "source_filename": f"vriksha:{payload.strategy_id}:{payload.source}",
     }
     return {
         "plan_id": plan_id,
         "cash": cash,
+        "market_data_account": market_data_account.label,
         "import_kind": target.attrs.get("import_kind", "target_portfolio"),
         "liquidate_absent": target.attrs.get("liquidate_absent", True),
         "target": frame_to_records(target),
@@ -323,6 +365,38 @@ def get_account(label: str, required: bool = True) -> Account | None:
     if required:
         raise HTTPException(404, f"Account not found: {label}")
     return None
+
+
+def get_market_data_account(execution_account: Account) -> Account:
+    label = os.getenv("KITE_MARKET_DATA_ACCOUNT_LABEL", "").strip()
+    if not label:
+        market_data_account = first_paid_api_account()
+        if market_data_account is None:
+            return execution_account
+        return ensure_market_data_account_connected(market_data_account)
+
+    market_data_account = get_account(label, required=False)
+    if market_data_account is None:
+        raise HTTPException(404, f"Market data account not found: {label}")
+
+    return ensure_market_data_account_connected(market_data_account)
+
+
+def first_paid_api_account() -> Account | None:
+    for account in load_accounts():
+        if account.has_paid_api:
+            return account
+    return None
+
+
+def ensure_market_data_account_connected(market_data_account: Account) -> Account:
+    if not market_data_account.access_token:
+        raise HTTPException(
+            400,
+            f"Market data account '{market_data_account.label}' is not connected. "
+            f"Login to it first so LTP can use its paid Kite API permissions.",
+        )
+    return market_data_account
 
 
 def vriksha_client(payload: VrikshaAuthInput | VrikshaPlanInput) -> VrikshaClient:

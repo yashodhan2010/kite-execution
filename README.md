@@ -53,8 +53,67 @@ Click `Open Kite Login` from the selected account. Complete the Zerodha login in
 Kite's own page. When Kite redirects back with `request_token`, the frontend
 captures it and the backend generates the access token automatically.
 
-The app does not store Kite passwords or TOTP seeds. The `request_token` input is
-kept only as a fallback if browser redirect capture is unavailable.
+The `request_token` input is kept as a fallback if browser redirect capture is
+unavailable.
+
+Planning can use one account for execution and another paid Kite app/session for
+LTP market data. Mark the paid account in `data/accounts.json`:
+
+```json
+{
+  "label": "Yashodhan",
+  "has_paid_api": true
+}
+```
+
+The app uses the first account marked `has_paid_api: true` for LTP. Override it
+in `.env` if needed:
+
+```text
+KITE_MARKET_DATA_ACCOUNT_LABEL=Yashodhan
+```
+
+Log in to that market-data account before generating plans for accounts whose
+Kite app does not have quote permissions.
+
+### Optional Auto-Login
+
+Selenium + TOTP auto-login is available from the backend:
+
+```text
+POST http://127.0.0.1:8001/api/auto-login/{account_label}
+```
+
+Store the Zerodha client ID, password, and TOTP seed in
+`data/accounts.json`:
+
+```json
+{
+  "login_user_id": "KITE_CLIENT_ID",
+  "password": "ZERODHA_PASSWORD",
+  "totp_secret": "BASE32_TOTP_SECRET"
+}
+```
+
+You can also store credentials in `.env`:
+
+```text
+KITE_USER_ID=
+KITE_PASSWORD=
+KITE_TOTP_SECRET=
+```
+
+For multiple accounts, suffix the variables with the saved account label in
+uppercase, replacing non-alphanumeric characters with underscores. For account
+label `main`, use:
+
+```text
+KITE_USER_ID_MAIN=
+KITE_PASSWORD_MAIN=
+KITE_TOTP_SECRET_MAIN=
+```
+
+Set `KITE_AUTO_LOGIN_HEADLESS=0` if you want to watch Chrome during login.
 
 ## Vriksha Direct Import
 

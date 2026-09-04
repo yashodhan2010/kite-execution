@@ -5,3 +5,5 @@ pandas>=2.2
 python-dotenv>=1.0
 kiteconnect>=5.0
 requests>=2.31
+pyotp>=2.9
+selenium>=4.10

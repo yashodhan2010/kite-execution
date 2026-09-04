@@ -19,7 +19,12 @@ function App() {
   const [active, setActive] = useState('');
   const [loginUrl, setLoginUrl] = useState('');
   const [requestToken, setRequestToken] = useState('');
-  const [accountForm, setAccountForm] = useState({ label: '', api_key: '', api_secret: '' });
+  const [accountForm, setAccountForm] = useState({
+    label: '',
+    api_key: '',
+    api_secret: '',
+    has_paid_api: false,
+  });
   const [file, setFile] = useState(null);
   const [importMode, setImportMode] = useState('csv');
   const [vrikshaAuth, setVrikshaAuth] = useState({
@@ -76,7 +81,7 @@ function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(accountForm),
     });
-    setAccountForm({ label: '', api_key: '', api_secret: '' });
+    setAccountForm({ label: '', api_key: '', api_secret: '', has_paid_api: false });
     await refresh();
     setBusy('');
   }
@@ -88,6 +93,14 @@ function App() {
     setLoginUrl(data.login_url);
     localStorage.setItem('kite_login_account', active);
     window.open(data.login_url, '_blank', 'noopener,noreferrer');
+    setBusy('');
+  }
+
+  async function autoLogin() {
+    if (!active) return;
+    setBusy('Auto logging in');
+    await call(`/api/auto-login/${encodeURIComponent(active)}`, { method: 'POST' });
+    await refresh();
     setBusy('');
   }
 
@@ -280,7 +293,10 @@ function App() {
                 onClick={() => setActive(account.label)}
               >
                 <span>{account.label}</span>
-                <small>{account.connected ? account.user_id || 'Connected' : 'Login needed'}</small>
+                <small>
+                  {account.connected ? account.user_id || 'Connected' : 'Login needed'}
+                  {account.has_paid_api ? ' · Paid API' : ''}
+                </small>
               </button>
             ))}
           </div>
@@ -291,6 +307,14 @@ function App() {
           <input placeholder="Account label" value={accountForm.label} onChange={(e) => setAccountForm({ ...accountForm, label: e.target.value })} />
           <input placeholder="API key" value={accountForm.api_key} onChange={(e) => setAccountForm({ ...accountForm, api_key: e.target.value })} />
           <input placeholder="API secret" type="password" value={accountForm.api_secret} onChange={(e) => setAccountForm({ ...accountForm, api_secret: e.target.value })} />
+          <label className="check compact-check">
+            <input
+              type="checkbox"
+              checked={accountForm.has_paid_api}
+              onChange={(e) => setAccountForm({ ...accountForm, has_paid_api: e.target.checked })}
+            />
+            <span>Paid API for LTP</span>
+          </label>
           <button className="primary" type="submit">Save Account</button>
         </form>
 
@@ -324,6 +348,7 @@ function App() {
             <p>{activeAccount?.connected ? 'Session token is available for this account.' : 'Open Kite, complete login, and the app will capture the token from the redirect.'}</p>
             <div className="button-row">
               <button className="secondary" disabled={!active} onClick={getLoginUrl}>Open Kite Login</button>
+              <button className="primary" disabled={!active} onClick={autoLogin}>Auto Login</button>
               <button className="secondary" disabled={!activeAccount?.connected} onClick={runDiagnostics}>Check Permissions</button>
               {loginUrl && <a className="link-button" href={loginUrl} target="_blank" rel="noreferrer">Login URL</a>}
             </div>
@@ -394,7 +419,7 @@ function App() {
             <div className="section-head">
               <div>
                 <h3>Execution Plan</h3>
-                <p>{plan.import_kind === 'rebalance_history' ? 'Latest rebalance changes only; unchanged holdings stay untouched.' : 'Full target portfolio; absent holdings are planned as exits.'}</p>
+                <p>{plan.import_kind === 'rebalance_history' ? 'Latest rebalance changes only; unchanged holdings stay untouched.' : 'Full target portfolio; absent holdings are planned as exits.'} Prices via {plan.market_data_account}.</p>
               </div>
               <div className="badge">{plan.import_kind.replace('_', ' ')}</div>
             </div>

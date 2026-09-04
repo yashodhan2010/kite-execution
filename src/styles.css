@@ -319,6 +319,12 @@ tr:last-child td { border-bottom: 0; }
   height: 18px;
 }
 
+.compact-check {
+  align-items: center;
+  color: #536259;
+  margin: 2px 0;
+}
+
 .empty {
   margin-top: 14px;
   padding: 26px;
